@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Folio
+GenericName=PDF Editor
+Comment=Open, edit, sign, merge and organise PDFs
+Exec=folio %F
+Icon=folio
+Terminal=false
+Categories=Office;Viewer;Graphics;
+MimeType=application/pdf;
+Keywords=pdf;edit;merge;split;sign;annotate;combine;
+StartupWMClass=folio
