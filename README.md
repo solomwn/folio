@@ -24,7 +24,8 @@ folio
 ```
 
 Folio then appears in the app menu, and in *Open With* when you right-click a PDF. To make it the
-default for PDFs: right-click a PDF ▸ *Properties* ▸ *Open With* ▸ Folio ▸ *Set as default*.
+default for PDFs: right-click a PDF ▸ *Open With…* ▸ Folio ▸ turn on *Always use for this file type*, or run
+`xdg-mime default folio.desktop application/pdf`.
 
 To update, install the newer `.deb` the same way. To remove: `sudo apt remove folio`.
 
@@ -50,6 +51,9 @@ an account number before sharing.
 **Files**: merge several PDFs (or images) into one, split by page / every N pages / custom ranges,
 extract selected pages, compress, protect with a password (AES-256), print. Images, XPS and EPUB open as PDFs.
 
+**Tabs**: every PDF opens as a tab in one window, also when you double-click more PDFs in Files while
+Folio is running. Drag tabs to reorder; each tab keeps its own zoom, page and undo history.
+
 **Comfort**: dark and light themes, undo/redo for every change, drag & drop files onto the window
 (drop several to merge), recent files.
 
@@ -64,8 +68,9 @@ extract selected pages, compress, protect with a password (AES-256), print. Imag
 | D | Draw | Ctrl + / Ctrl − / Ctrl 0 | Zoom in / out / fit width |
 | R | Rectangle | Delete | Delete selected pages |
 | X | Erase area | Ctrl+P | Print |
-| I | Image | Ctrl+W | Close document |
+| I | Image | Ctrl+W | Close tab |
 | S | Signature | Esc | Back to the Select tool |
+| Ctrl+Tab | Next tab | Ctrl+Shift+Tab | Previous tab |
 
 ## Your data
 

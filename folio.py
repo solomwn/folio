@@ -26,16 +26,17 @@ from PySide6.QtGui import (QIcon, QPixmap, QImage, QPainter, QColor, QPen,
                            QKeySequence, QPainterPath, QFont, QShortcut,
                            QPalette, QGuiApplication)
 from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QToolButton, QPushButton, QButtonGroup, QScrollArea, QListWidget,
     QListWidgetItem, QAbstractItemView, QStyledItemDelegate, QStyle,
     QFileDialog, QMessageBox, QInputDialog, QDialog, QPlainTextEdit, QSpinBox,
-    QLineEdit, QMenu, QStackedWidget, QFrame, QRadioButton, QAbstractButton,
+    QLineEdit, QMenu, QStackedWidget, QTabBar, QFrame, QRadioButton, QAbstractButton,
     QColorDialog)
 
 APP = "Folio"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "folio"
 SIG_PATH = CONFIG_DIR / "signature.png"
 OPENABLE = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif",
@@ -64,7 +65,16 @@ QSS = """
 * { font-size: 13px; }
 QWidget { color: %(text)s; }
 QMainWindow, QDialog, #Home, #Central { background: %(bg)s; }
-#TopBar, #OptionsBar, #BottomBar, #Sidebar { background: %(surface)s; }
+#TopBar, #OptionsBar, #BottomBar, #Sidebar, #TabStrip { background: %(surface)s; }
+#TabStrip { border-bottom: 1px solid %(border)s; }
+QTabBar { background: transparent; }
+QTabBar::tab { background: transparent; color: %(muted)s; border: 1px solid transparent;
+               border-radius: 8px; padding: 5px 6px 5px 12px; margin: 6px 2px; min-width: 60px; }
+QTabBar::tab:hover { background: %(hover)s; color: %(text)s; }
+QTabBar::tab:selected { background: %(surface2)s; color: %(text)s; border: 1px solid %(border)s; }
+QTabBar QToolButton { background: %(surface)s; border-radius: 6px; }
+QToolButton#TabClose { background: transparent; }
+QToolButton#TabClose:hover { background: %(hover)s; }
 #TopBar { border-bottom: 1px solid %(border)s; }
 #OptionsBar { border-bottom: 1px solid %(border)s; }
 #BottomBar { border-top: 1px solid %(border)s; }
@@ -370,6 +380,8 @@ class Document(QObject):
         self.dirty = dirty
         self.undo_stack = []
         self.redo_stack = []
+        self.view_page = 0
+        self.view_zoom = None
 
     def _reopen(self, data):
         try:
@@ -1021,9 +1033,9 @@ class Viewer(QScrollArea):
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
     # -- document ---------------------------------------------------------
-    def set_document(self, d):
+    def set_document(self, d, page=0):
         self.d = d
-        self.rebuild()
+        self.rebuild(keep_page=page)
 
     def rebuild(self, keep_page=None):
         for w in self.pages:
@@ -1620,6 +1632,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.d = None
+        self.docs = []
         self.tool = "select"
         self.settings = QSettings("Folio", "Folio")
         self.opts = {
@@ -1645,6 +1658,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._build_topbar())
+        root.addWidget(self._build_tabstrip())
         self.options = OptionsBar(self)
         root.addWidget(self.options)
         self.stack = QStackedWidget()
@@ -1687,10 +1701,6 @@ class MainWindow(QMainWindow):
         brand.setObjectName("Brand")
         h.addWidget(brand)
         h.addSpacing(12)
-        self.doc_chip = QLabel("")
-        self.doc_chip.setObjectName("DocChip")
-        self.doc_chip.setMaximumWidth(260)
-        h.addWidget(self.doc_chip)
         h.addStretch(1)
 
         self.tool_group = QWidget()
@@ -1755,6 +1765,32 @@ class MainWindow(QMainWindow):
         h.addWidget(self.save_btn)
         return bar
 
+    def _build_tabstrip(self):
+        self.tab_strip = QWidget()
+        self.tab_strip.setObjectName("TabStrip")
+        self.tab_strip.setAttribute(Qt.WA_StyledBackground, True)
+        self.tab_strip.setFixedHeight(42)
+        h = QHBoxLayout(self.tab_strip)
+        h.setContentsMargins(10, 0, 10, 0)
+        h.setSpacing(2)
+        self.tabs = QTabBar()
+        self.tabs.setDrawBase(False)
+        self.tabs.setMovable(True)
+        self.tabs.setExpanding(False)
+        self.tabs.setElideMode(Qt.ElideNone)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setFocusPolicy(Qt.NoFocus)
+        self.tabs.currentChanged.connect(self.switch_to)
+        self.tabs.tabMoved.connect(self._tab_moved)
+        self.tabs.tabBarDoubleClicked.connect(lambda i: self.open_dialog() if i < 0 else None)
+        h.addWidget(self.tabs)
+        new_tab = tbtn("plus", "Open another PDF   Ctrl+O", size=16)
+        new_tab.clicked.connect(self.open_dialog)
+        h.addWidget(new_tab)
+        h.addStretch(1)
+        self.tab_strip.hide()
+        return self.tab_strip
+
     def _build_menu(self):
         m = QMenu(self)
 
@@ -1781,7 +1817,7 @@ class MainWindow(QMainWindow):
         add("Protect with password…", "lock", self.protect)
         add("Print…", "print", self.print_doc, "Ctrl+P")
         m.addSeparator()
-        add("Close document", "close", self.close_document, "Ctrl+W")
+        add("Close tab", "close", self.close_document, "Ctrl+W")
         add(f"About {APP}", "info", self.about, None, False)
         return m
 
@@ -1842,6 +1878,10 @@ class MainWindow(QMainWindow):
             s.activated.connect(fn)
 
         sc("Ctrl+S", self.save)
+        sc("Ctrl+Tab", lambda: self._cycle_tab(1))
+        sc("Ctrl+PgDown", lambda: self._cycle_tab(1))
+        sc("Ctrl+Shift+Tab", lambda: self._cycle_tab(-1))
+        sc("Ctrl+PgUp", lambda: self._cycle_tab(-1))
         sc("Ctrl+Z", self.undo)
         sc("Ctrl+Shift+Z", self.redo)
         sc("Ctrl+Y", self.redo)
@@ -1890,14 +1930,10 @@ class MainWindow(QMainWindow):
         self.redo_btn.setEnabled(has and bool(self.d.redo_stack))
         if has:
             dot = "  ●" if self.d.dirty else ""
-            self.doc_chip.setText(f"{self.d.title}{dot}")
-            self.doc_chip.setToolTip(self.d.path or "Not saved yet")
-            self.doc_chip.show()
             self.setWindowTitle(f"{'• ' if self.d.dirty else ''}{self.d.title} — {APP}")
             self.page_total.setText(f"/ {len(self.d.doc)}")
             self._on_current(self.viewer.current)
         else:
-            self.doc_chip.hide()
             self.setWindowTitle(APP)
             self.page_box.setText("")
             self.page_total.setText("")
@@ -1942,31 +1978,108 @@ class MainWindow(QMainWindow):
         return hex_to_rgb(self.opts[tool]["color"])
 
     # -- document lifecycle -------------------------------------------------
-    def set_document(self, d):
-        old = self.d
+    def add_document(self, d):
+        """Open a document in a new tab and switch to it."""
+        d.structure_changed.connect(lambda d=d: self.on_structure() if d is self.d else None)
+        d.pages_changed.connect(lambda pages, d=d: self.on_pages(pages) if d is self.d else None)
+        d.state_changed.connect(lambda d=d: self._doc_state(d))
+        self.docs.append(d)
+        self.tabs.blockSignals(True)
+        i = self.tabs.addTab(d.title)
+        close = tbtn("close", "Close tab   Ctrl+W", size=14)
+        close.setFixedSize(22, 22)
+        close.setObjectName("TabClose")
+        close.clicked.connect(lambda _=False, b=close: self._close_tab_button(b))
+        self.tabs.setTabButton(i, QTabBar.RightSide, close)
+        self.tabs.blockSignals(False)
+        self.tab_strip.show()
+        self._update_tab(d)
+        self.switch_to(i)
+
+    def switch_to(self, i):
+        if not (0 <= i < len(self.docs)):
+            return
+        if self.d is not None and self.d in self.docs:
+            self.d.view_page = max(self.viewer.current, 0)
+            self.d.view_zoom = self.viewer.zoom
+        d = self.docs[i]
         self.d = d
+        if self.tabs.currentIndex() != i:
+            self.tabs.blockSignals(True)
+            self.tabs.setCurrentIndex(i)
+            self.tabs.blockSignals(False)
         self.search_reset(update=False)
-        if d:
-            d.structure_changed.connect(self.on_structure)
-            d.pages_changed.connect(self.on_pages)
-            d.state_changed.connect(self.update_state)
-            self.stack.setCurrentIndex(1)
-            self.sidebar.rebuild()
-            self.viewer.set_document(d)
+        self.stack.setCurrentIndex(1)
+        if d.view_zoom:
+            self.viewer.zoom = d.view_zoom
+            self.viewer.zoom_changed.emit(d.view_zoom)
+        self.sidebar.rebuild()
+        self.viewer.set_document(d, d.view_page)
+        if not d.view_zoom:
             QTimer.singleShot(0, self.viewer.initial_zoom)
-            self.viewer.setFocus()
-        else:
-            self.viewer.set_document(None)
-            self.sidebar.rebuild()
-            self.stack.setCurrentIndex(0)
-            self.home.refresh_recent()
-        if old is not None:
-            try:
-                old.doc.close()
-            except Exception:
-                pass
-            old.deleteLater()
+        self.viewer.setFocus()
         self.update_state()
+
+    def _show_home(self):
+        self.d = None
+        self.search_reset(update=False)
+        self.viewer.set_document(None)
+        self.sidebar.rebuild()
+        self.stack.setCurrentIndex(0)
+        self.tab_strip.hide()
+        self.home.refresh_recent()
+        self.update_state()
+
+    def close_tab(self, i=None):
+        """Close tab i (default: the current one). Returns False if the user cancelled."""
+        if i is None:
+            i = self.tabs.currentIndex()
+        if not (0 <= i < len(self.docs)):
+            return True
+        if self.docs[i].dirty and i != self.tabs.currentIndex():
+            self.switch_to(i)
+        if not self.maybe_save():
+            return False
+        d = self.docs.pop(i)
+        was_current = d is self.d
+        self.tabs.blockSignals(True)
+        self.tabs.removeTab(i)
+        self.tabs.blockSignals(False)
+        try:
+            d.doc.close()
+        except Exception:
+            pass
+        d.deleteLater()
+        if not self.docs:
+            self._show_home()
+        elif was_current:
+            self.d = None
+            self.switch_to(min(i, len(self.docs) - 1))
+        return True
+
+    def _close_tab_button(self, btn):
+        for i in range(self.tabs.count()):
+            if self.tabs.tabButton(i, QTabBar.RightSide) is btn:
+                return self.close_tab(i)
+
+    def _tab_moved(self, frm, to):
+        self.docs.insert(to, self.docs.pop(frm))
+
+    def _cycle_tab(self, step):
+        if len(self.docs) > 1:
+            self.switch_to((self.tabs.currentIndex() + step) % len(self.docs))
+
+    def _doc_state(self, d):
+        self._update_tab(d)
+        if d is self.d:
+            self.update_state()
+
+    def _update_tab(self, d):
+        if d not in self.docs:
+            return
+        i = self.docs.index(d)
+        self.tabs.setTabText(i, f"{d.title}  ●" if d.dirty else d.title)
+        self.tabs.setTabToolTip(i, d.path or "Not saved yet")
 
     def on_structure(self):
         cur = self.viewer.current
@@ -2001,14 +2114,17 @@ class MainWindow(QMainWindow):
     def open_dialog(self):
         start = str(Path(self.d.path).parent) if self.d and self.d.path else str(Path.home())
         paths, _ = QFileDialog.getOpenFileNames(self, "Open", start, OPEN_FILTER)
-        if len(paths) == 1:
-            self.open_path(paths[0])
-        elif len(paths) > 1:
-            self.merge_dialog(paths)
+        self.open_paths(paths)
+
+    def open_paths(self, paths):
+        for p in paths:
+            self.open_path(p)
 
     def open_path(self, path):
-        if not self.maybe_save():
-            return
+        resolved = str(Path(path).resolve())
+        for i, d in enumerate(self.docs):
+            if d.path and str(Path(d.path).resolve()) == resolved:
+                return self.switch_to(i)
         try:
             doc, pw, is_pdf = load_document(path, self)
         except Cancelled:
@@ -2016,12 +2132,11 @@ class MainWindow(QMainWindow):
         except Exception as ex:
             return self.error(f"Couldn't open “{Path(path).name}”", str(ex))
         title = Path(path).name if is_pdf else Path(path).stem + ".pdf"
-        self.set_document(Document(doc, str(path) if is_pdf else None, title, pw, dirty=not is_pdf))
+        self.add_document(Document(doc, resolved if is_pdf else None, title, pw, dirty=not is_pdf))
         self.add_recent(path)
 
     def close_document(self):
-        if self.maybe_save():
-            self.set_document(None)
+        self.close_tab()
 
     def save(self):
         if not self.d:
@@ -2095,25 +2210,41 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, e):
         paths = self._drop_paths(e)
-        if len(paths) == 1:
-            if self.d:
-                m = QMenu(self)
-                a_open = m.addAction(T.icon("open"), "Open this file")
-                a_ins = m.addAction(T.icon("plus"), "Insert its pages after the current page")
-                chosen = m.exec(self.mapToGlobal(e.position().toPoint()))
-                if chosen == a_ins:
-                    return self.insert_from_file([paths[0]])
-                if chosen != a_open:
-                    return
-            self.open_path(paths[0])
-        elif paths:
+        if not paths:
+            return
+        many = len(paths) > 1
+        if not self.d and not many:
+            return self.open_path(paths[0])
+        m = QMenu(self)
+        a_open = m.addAction(T.icon("open"), "Open in new tabs" if many else "Open in a new tab")
+        a_merge = m.addAction(T.icon("merge"), "Merge into one PDF…") if many else None
+        a_ins = (m.addAction(T.icon("plus"), "Insert pages after the current page")
+                 if self.d else None)
+        chosen = m.exec(self.mapToGlobal(e.position().toPoint()))
+        if chosen is None:
+            return
+        if chosen == a_open:
+            self.open_paths(paths)
+        elif chosen == a_merge:
             self.merge_dialog(paths)
+        elif chosen == a_ins:
+            self.insert_from_file(paths)
 
     def closeEvent(self, e):
-        if self.maybe_save():
-            e.accept()
-        else:
-            e.ignore()
+        for i in range(len(self.docs) - 1, -1, -1):
+            if self.docs[i].dirty:
+                self.switch_to(i)
+                if not self.maybe_save():
+                    return e.ignore()
+        e.accept()
+
+    def bring_to_front(self):
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        QApplication.alert(self)
 
     # -- page tools ---------------------------------------------------------
     def page_click(self, i, pos):
@@ -2435,8 +2566,6 @@ class MainWindow(QMainWindow):
         if not dlg.exec():
             return
         files = dlg.paths()
-        if not self.maybe_save():
-            return
         out = fitz.open()
         for p in files:
             try:
@@ -2453,7 +2582,7 @@ class MainWindow(QMainWindow):
         data = out.tobytes(garbage=3, deflate=True)
         out.close()
         doc = fitz.open(stream=data, filetype="pdf")
-        self.set_document(Document(doc, None, "Merged.pdf", dirty=True))
+        self.add_document(Document(doc, None, "Merged.pdf", dirty=True))
         self.toast.show_msg(f"Merged {len(files)} files — press Save to keep it")
 
     def compress(self):
@@ -2576,9 +2705,59 @@ class MainWindow(QMainWindow):
         self.search_count.setText(f"{self.hit_pos + 1}/{len(self.hits)}")
 
 
+SERVER_NAME = f"folio-{os.getuid()}" if hasattr(os, "getuid") else "folio"
+
+
+def send_to_running_instance(files):
+    """If Folio is already running, hand it the files and return True."""
+    sock = QLocalSocket()
+    sock.connectToServer(SERVER_NAME)
+    if not sock.waitForConnected(400):
+        return False
+    sock.write(("\n".join(files) + "\n").encode("utf-8"))
+    sock.flush()
+    sock.waitForBytesWritten(2000)
+    sock.disconnectFromServer()
+    if sock.state() != QLocalSocket.UnconnectedState:
+        sock.waitForDisconnected(1000)
+    return True
+
+
+class InstanceServer(QObject):
+    """Receives file paths from later launches and opens them as tabs."""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.server = QLocalServer(self)
+        self.server.setSocketOptions(QLocalServer.UserAccessOption)
+        if not self.server.listen(SERVER_NAME):
+            QLocalServer.removeServer(SERVER_NAME)  # stale socket from a crash
+            self.server.listen(SERVER_NAME)
+        self.server.newConnection.connect(self._accept)
+
+    def _accept(self):
+        while self.server.hasPendingConnections():
+            conn = self.server.nextPendingConnection()
+            conn.setProperty("buf", b"")
+            conn.readyRead.connect(lambda c=conn: c.setProperty("buf", c.property("buf") + bytes(c.readAll())))
+            conn.disconnected.connect(lambda c=conn: self._done(c))
+
+    def _done(self, conn):
+        data = conn.property("buf") + bytes(conn.readAll())
+        conn.deleteLater()
+        files = [f for f in data.decode("utf-8", "replace").splitlines() if f.strip()]
+        self.win.bring_to_front()
+        if files:
+            QTimer.singleShot(0, lambda: self.win.open_paths(files))
+
+
 def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
+    files = [str(Path(a).resolve()) for a in sys.argv[1:] if Path(a).exists()]
+    if "--new-window" not in sys.argv and send_to_running_instance(files):
+        return
     app.setApplicationName(APP)
     app.setOrganizationName(APP)
     app.setDesktopFileName("folio")
@@ -2592,12 +2771,11 @@ def main():
     T.apply(app)
     win = MainWindow()
     win._on_theme()
+    if "--new-window" not in sys.argv:
+        win.instance_server = InstanceServer(win)
     win.show()
-    files = [a for a in sys.argv[1:] if Path(a).exists()]
-    if len(files) == 1:
-        QTimer.singleShot(0, lambda: win.open_path(files[0]))
-    elif len(files) > 1:
-        QTimer.singleShot(0, lambda: win.merge_dialog(files))
+    if files:
+        QTimer.singleShot(0, lambda: win.open_paths(files))
     sys.exit(app.exec())
 
 

@@ -22,7 +22,7 @@ python3 -m venv "$BUILD/venv"
 "$BUILD/venv/bin/pyinstaller" --noconfirm --clean --windowed --name folio \
     --distpath "$BUILD/app" --workpath "$BUILD/work" --specpath "$BUILD" \
     --exclude-module tkinter \
-    --exclude-module PySide6.QtNetwork --exclude-module PySide6.QtQml \
+    --exclude-module PySide6.QtQml \
     --exclude-module PySide6.QtQuick --exclude-module PySide6.QtWebEngineCore \
     --exclude-module PySide6.QtMultimedia --exclude-module PySide6.Qt3DCore \
     folio.py
